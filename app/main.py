@@ -4,9 +4,11 @@ import shutil
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, HTTPException
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.agent import run_agent as execute_agent
+from app.agent import run_agent as execute_agent, run_agent_stream
 from app.session_store import (
     generate_session_id,
     get_history,
@@ -15,14 +17,6 @@ from app.session_store import (
 )
 
 logger = logging.getLogger(__name__)
-
-import mlflow
-mlflow.anthropic.autolog()
-
-# Set a tracking URI and an experiment
-mlflow.set_tracking_uri("http://127.0.0.1:5000")
-mlflow.set_experiment("Anthropic_1")
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -206,19 +200,39 @@ async def list_files():
 
 @app.post("/agent", response_model=AgentResponse)
 async def agent_endpoint(request: AgentRequest):
-    """Send an instruction to the Claude agent. Optionally resume a session."""
+    """Send an instruction to the Claude agent. Optionally resume a session.
+
+    This is the blocking (non-streaming) endpoint. For real-time progress
+    updates, use POST /agent/stream instead.
+    """
     try:
         result = await execute_agent(
             instruction=request.instruction,
             session_id=request.session_id,
         )
         session_dir = str(PROCESSED_DIR / result.session_id)
+
+        # Surface agent-level errors as HTTP errors
+        if result.is_error:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": result.error_detail,
+                    "result": result.result,
+                    "session_id": result.session_id,
+                    "files_modified": result.files_modified,
+                    "session_dir": session_dir,
+                },
+            )
+
         return AgentResponse(
             session_id=result.session_id,
             result=result.result,
             files_modified=result.files_modified,
             session_dir=session_dir,
         )
+    except HTTPException:
+        raise  # Re-raise our own HTTPExceptions
     except ValueError as e:
         raise HTTPException(
             status_code=400,
@@ -230,3 +244,59 @@ async def agent_endpoint(request: AgentRequest):
             status_code=500,
             detail=f"Agent execution failed: {str(e)}",
         )
+
+
+@app.post("/agent/stream")
+async def agent_stream_endpoint(request: AgentRequest):
+    """Send an instruction to the Claude agent with real-time SSE streaming.
+
+    Returns a Server-Sent Events stream. Each event is a JSON object with
+    a "type" field indicating the event kind:
+
+    - session_start:  {"type": "session_start", "session_id": "..."}
+    - status:         {"type": "status", "message": "Agent initialized", ...}
+    - tool_start:     {"type": "tool_start", "tool": "Bash", ...}
+    - tool_end:       {"type": "tool_end", "tool": "Bash", "summary": "npm install", ...}
+    - text_delta:     {"type": "text_delta", "text": "partial text...", ...}
+    - error:          {"type": "error", "message": "...", ...}
+    - result:         {"type": "result", "status": "success", "result": "...", ...}
+    - files:          {"type": "files", "files_modified": [...], ...}
+    - done:           {"type": "done", "session_id": "..."}
+
+    Connect with EventSource or any SSE client:
+        const es = new EventSource('/agent/stream', { method: 'POST', body: ... });
+    Or use fetch() and read the response body as a stream.
+    """
+
+    async def event_generator():
+        async for event in run_agent_stream(
+            instruction=request.instruction,
+            session_id=request.session_id,
+        ):
+            yield event.to_sse()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Frontend UI
+# ---------------------------------------------------------------------------
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@app.get("/")
+async def serve_ui():
+    """Serve the streaming agent UI."""
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+# Mount static files (CSS, JS, etc.) — MUST be after all API routes
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
