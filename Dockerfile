@@ -11,6 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Claude Code CLI globally (required by claude-agent-sdk)
 RUN npm install -g @anthropic-ai/claude-code
 
+# Create a non-root user
+RUN useradd -m -u 1000 appuser
+
 # Set working directory for the app
 WORKDIR /app
 
@@ -23,6 +26,12 @@ COPY app/ ./app/
 
 # Create the workspace directories where uploaded files live
 RUN mkdir -p /workspace/uploads /workspace/processed
+
+# Change ownership of app and workspace directories to the non-root user
+RUN chown -R appuser:appuser /app /workspace
+
+# Switch to the non-root user
+USER appuser
 
 # Expose FastAPI port
 EXPOSE 8000
