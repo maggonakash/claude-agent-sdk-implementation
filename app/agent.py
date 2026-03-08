@@ -48,21 +48,38 @@ if "CLAUDECODE" in os.environ:
     del os.environ["CLAUDECODE"]
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants & path helpers
 # ---------------------------------------------------------------------------
 WORKSPACE_DIR = Path(os.getenv("WORKSPACE_DIR", "./workspace")).resolve()
 
+
+def get_session_paths(session_id: str) -> tuple[Path, Path, Path]:
+    """Return (session_root, uploads_dir, processed_dir) for a session."""
+    session_root = WORKSPACE_DIR / session_id
+    return session_root, session_root / "uploads", session_root / "processed"
+
+
+def ensure_session_dirs(session_id: str) -> tuple[Path, Path, Path]:
+    """Create and return the session directory structure."""
+    session_root, uploads_dir, processed_dir = get_session_paths(session_id)
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    return session_root, uploads_dir, processed_dir
+
+
+# Relative paths — the agent's cwd is session_root, so ./uploads and
+# ./processed just work without leaking absolute filesystem structure.
 SYSTEM_PROMPT_APPEND = """
 You are a document processing agent.
 
 Your working directory is the session root.
 Uploaded files (read-only source documents) are in: ./uploads
-Your output directory for this session is: ./processed
+Your output directory for processed results is: ./processed
 
 RULES:
 - You MUST NEVER delete any files. Only read, copy, edit, and create.
 - When editing a document, always make a copy first and edit the copy.
-- Save ALL outputs to your session output directory: ./processed
+- Save ALL outputs to your processed output directory: ./processed
 - You may READ files from the uploads directory but NEVER write there.
 - Use the available Skills to read .pptx, .docx, and .xlsx files.
 - Be thorough and report what you did after completing a task.
@@ -105,8 +122,19 @@ def _build_options(
     """Build ClaudeAgentOptions with hooks, permissions, and Skills."""
     logger.info(f"Building options — session={app_session_id}, cwd={session_root}")
 
+    uploads_dir = session_root / "uploads"
+    processed_dir = session_root / "processed"
+
     # Build the system prompt with optional history context
     append_parts = [SYSTEM_PROMPT_APPEND]
+
+    # List all currently uploaded files so the agent knows what's available
+    # without needing to Glob first — saves a turn.
+    if uploads_dir.exists():
+        uploaded = [f.name for f in uploads_dir.iterdir() if f.is_file()]
+        if uploaded:
+            files_list = "\n".join(f"  - {name}" for name in uploaded)
+            append_parts.append(f"Currently uploaded files in ./uploads:\n{files_list}")
 
     if history:
         history_text = _format_history(history)
@@ -118,8 +146,8 @@ def _build_options(
     async def session_file_isolation(input_data, tool_use_id, context):
         return await enforce_file_isolation(
             input_data, tool_use_id, context,
-            allowed_write_dir=str(session_root / "processed"),
-            allowed_read_dirs=[str(session_root)],
+            allowed_write_dir=str(processed_dir),
+            allowed_read_dirs=[str(uploads_dir), str(processed_dir)],
         )
 
     opts = ClaudeAgentOptions(
@@ -219,7 +247,7 @@ async def run_agent(
     Args:
         instruction: Natural language instruction from the user.
         session_id:  Pre-generated app session ID. None = create a new session.
-        uploaded_files: Optional list of filenames uploaded in this request.
+        uploaded_files: Names of files uploaded with this request (if any).
 
     Returns:
         AgentResult with session_id, sdk_session_id, result text,
@@ -241,16 +269,19 @@ async def run_agent(
         sdk_session_id = session_data.get("sdk_session_id")
         history = session_data.get("history", [])
 
-    # --- 2. Ensure session-specific directories exist -----------------------
-    session_root = WORKSPACE_DIR / session_id
-    uploads_dir = session_root / "uploads"
-    processed_dir = session_root / "processed"
+    # --- 2. Ensure session directory structure exists ------------------------
+    session_root, _, processed_dir = ensure_session_dirs(session_id)
 
-    session_root.mkdir(parents=True, exist_ok=True)
-    uploads_dir.mkdir(exist_ok=True)
-    processed_dir.mkdir(exist_ok=True)
+    # --- 3. Build prompt with upload info -----------------------------------
+    prompt = instruction
+    if uploaded_files:
+        files_list = ", ".join(uploaded_files)
+        prompt = (
+            f"[The user has uploaded the following files: {files_list}]\n\n"
+            f"{instruction}"
+        )
 
-    # --- 3. Build options and run -------------------------------------------
+    # --- 4. Build options and run -------------------------------------------
     options = _build_options(
         app_session_id=session_id,
         session_root=session_root,
@@ -259,11 +290,6 @@ async def run_agent(
         # Only inject history text for sessions that can't be SDK-resumed.
         # When SDK resume works, the agent already has full context internally.
     )
-
-    # Append uploaded files info to instruction
-    if uploaded_files:
-        file_list = ", ".join(uploaded_files)
-        instruction += f"\n\n[System Note: The user uploaded the following files to ./uploads/: {file_list}]"
 
     # Log the user instruction
     add_history_entry(WORKSPACE_DIR, session_id, role="user", content=instruction)
@@ -276,7 +302,7 @@ async def run_agent(
     logger.info(f"Running agent — session={session_id}, instruction={instruction[:80]}...")
 
     try:
-        async for message in query(prompt=instruction, options=options):
+        async for message in query(prompt=prompt, options=options):
             # Capture SDK session ID from the init message
             if isinstance(message, SystemMessage) and message.subtype == "init":
                 captured_sdk_session_id = message.data.get(
@@ -317,7 +343,7 @@ async def run_agent(
             ) from e
         raise
 
-    # --- 4. Persist results -------------------------------------------------
+    # --- 5. Persist results -------------------------------------------------
     role = "error" if is_error else "assistant"
     content = f"[ERROR] {error_detail}\n{result_text}" if is_error else result_text
     add_history_entry(WORKSPACE_DIR, session_id, role=role, content=content)
@@ -329,7 +355,7 @@ async def run_agent(
         sdk_session_id=captured_sdk_session_id,
     )
 
-    # Scan the session output directory for files
+    # Scan the processed output directory for files
     files_modified = []
     if processed_dir.exists():
         files_modified = [
@@ -371,24 +397,30 @@ async def run_agent_stream(
 
     if session_id is None:
         session_id = generate_session_id()
+        logger.info(f"Stream: Generated new session_id: {session_id}")
 
     if is_new:
         create_session(WORKSPACE_DIR, session_id)
         sdk_session_id = None
         history = []
+        logger.info(f"Stream: Created new session record for {session_id}")
     else:
         session_data = get_session(WORKSPACE_DIR, session_id)
         sdk_session_id = session_data.get("sdk_session_id")
         history = session_data.get("history", [])
+        logger.info(f"Stream: Resuming session {session_id} (SDK ID: {sdk_session_id}) with {len(history)} history items")
 
-    # --- 2. Ensure session-specific directories exist -----------------------
-    session_root = WORKSPACE_DIR / session_id
-    uploads_dir = session_root / "uploads"
-    processed_dir = session_root / "processed"
+    session_root, _, processed_dir = ensure_session_dirs(session_id)
 
-    session_root.mkdir(parents=True, exist_ok=True)
-    uploads_dir.mkdir(exist_ok=True)
-    processed_dir.mkdir(exist_ok=True)
+    # Build prompt with upload info
+    prompt = instruction
+    if uploaded_files:
+        files_list = ", ".join(uploaded_files)
+        prompt = (
+            f"[The user has uploaded the following files: {files_list}]\n\n"
+            f"{instruction}"
+        )
+        logger.info(f"Stream: Added upload context to prompt. Files: {files_list}")
 
     options = _build_options(
         app_session_id=session_id,
@@ -396,11 +428,10 @@ async def run_agent_stream(
         sdk_session_id=sdk_session_id,
         history=history if sdk_session_id is None and history else None,
     )
-
-    # Append uploaded files info to instruction
-    if uploaded_files:
-        file_list = ", ".join(uploaded_files)
-        instruction += f"\n\n[System Note: The user uploaded the following files to ./uploads/: {file_list}]"
+    
+    logger.info(f"Stream: Built options for session {session_id}. History passed: {bool(options.system_prompt.get('append'))}")
+    logger.info(f"Stream: System prompt append:\n{options.system_prompt.get('append')}")
+    logger.info(f"Stream: User instruction:\n{instruction}")
 
     add_history_entry(WORKSPACE_DIR, session_id, role="user", content=instruction)
 
@@ -418,7 +449,7 @@ async def run_agent_stream(
     turn_count: int = 0
 
     try:
-        async for message in query(prompt=instruction, options=options):
+        async for message in query(prompt=prompt, options=options):
 
             # --- StreamEvent: real-time token-level updates ---
             if isinstance(message, StreamEvent):
@@ -575,7 +606,7 @@ def _summarize_tool_input(tool_name: str, raw_json: str) -> str:
         return data.get("file_path", "")
     elif tool_name == "Bash":
         cmd = data.get("command", "")
-        return cmd[:120]
+        return cmd[:300]
     elif tool_name == "Glob":
         return data.get("pattern", "")
     elif tool_name == "Grep":
@@ -589,4 +620,4 @@ def _summarize_tool_input(tool_name: str, raw_json: str) -> str:
             return in_progress[0].get("activeForm", "")
         return f"{len(todos)} todos"
     else:
-        return str(data)[:100]
+        return str(data)[:200]
