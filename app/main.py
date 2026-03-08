@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
-# ... imports ...
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 # Configure logging
 logging.basicConfig(
@@ -15,9 +17,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-from fastapi.responses import StreamingResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
 from app.agent import (
     run_agent as execute_agent,
@@ -164,127 +163,6 @@ async def get_session_history(session_id: str):
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
     history = get_history(WORKSPACE_DIR, session_id)
     return [HistoryEntry(**e) for e in history]
-
-
-@app.get("/sessions/{session_id}/files", response_model=list[FileInfo])
-async def list_session_files(session_id: str):
-    """List all files in a session (uploads + processed)."""
-    session_root, uploads_dir, processed_dir = get_session_paths(session_id)
-    if not session_root.exists():
-        raise HTTPException(status_code=404, detail="Session directory not found")
-    results: list[FileInfo] = []
-    for directory in [uploads_dir, processed_dir]:
-        if directory.exists():
-            for item in directory.rglob("*"):
-                if item.is_file():
-                    results.append(
-                        FileInfo(
-                            name=item.name,
-                            path=str(item),
-                            size_bytes=item.stat().st_size,
-                        )
-                    )
-    return results
-
-
-@app.get("/sessions/{session_id}/uploads", response_model=list[FileInfo])
-async def list_session_uploads(session_id: str):
-    """List uploaded files for a specific session."""
-    _, uploads_dir, _ = get_session_paths(session_id)
-    if not uploads_dir.exists():
-        raise HTTPException(status_code=404, detail="Session uploads directory not found")
-    results: list[FileInfo] = []
-    for item in uploads_dir.iterdir():
-        if item.is_file():
-            results.append(
-                FileInfo(
-                    name=item.name,
-                    path=str(item),
-                    size_bytes=item.stat().st_size,
-                )
-            )
-    return results
-
-
-@app.post("/sessions/{session_id}/upload", response_model=list[FileInfo])
-async def upload_session_files(session_id: str, files: list[UploadFile]):
-    """Upload one or more .pptx, .docx, or .xlsx files to a session's uploads dir."""
-    uploaded_names = await _save_uploads(session_id, files)
-    # Return full FileInfo for each uploaded file
-    _, uploads_dir, _ = get_session_paths(session_id)
-    return [
-        FileInfo(
-            name=name,
-            path=str(uploads_dir / name),
-            size_bytes=(uploads_dir / name).stat().st_size,
-        )
-        for name in uploaded_names
-    ]
-
-
-@app.post("/agent", response_model=AgentResponse)
-async def agent_endpoint(
-    instruction: str = Form(...),
-    session_id: Optional[str] = Form(None),
-    files: list[UploadFile] = File(default=[]),
-):
-    """Send an instruction to the Claude agent. Optionally upload files and/or resume a session.
-
-    Accepts multipart form data:
-    - instruction: The natural language instruction (required)
-    - session_id: Session ID to resume (optional, omit for new session)
-    - files: .pptx/.docx/.xlsx files to upload (optional)
-
-    This is the blocking (non-streaming) endpoint. For real-time progress
-    updates, use POST /agent/stream instead.
-    """
-    try:
-        # If files are provided but no session_id, generate one
-        if files and not session_id:
-            session_id = generate_session_id()
-
-        # Save any uploaded files
-        uploaded_names = await _save_uploads(session_id, files) if session_id and files else []
-
-        result = await execute_agent(
-            instruction=instruction,
-            session_id=session_id,
-            uploaded_files=uploaded_names or None,
-        )
-        session_root, _, _ = get_session_paths(result.session_id)
-
-        # Surface agent-level errors as HTTP errors
-        if result.is_error:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "message": result.error_detail,
-                    "result": result.result,
-                    "session_id": result.session_id,
-                    "files_modified": result.files_modified,
-                    "session_dir": str(session_root),
-                },
-            )
-
-        return AgentResponse(
-            session_id=result.session_id,
-            result=result.result,
-            files_modified=result.files_modified,
-            session_dir=str(session_root),
-        )
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=str(e),
-        )
-    except Exception as e:
-        logger.exception("Agent execution failed")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Agent execution failed: {str(e)}",
-        )
 
 
 @app.post("/agent/stream")
