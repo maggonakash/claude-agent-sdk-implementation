@@ -464,7 +464,7 @@
     <div class="feed" id="feed">
       <div class="empty-state" id="emptyState">
         <div class="empty-state-icon">D</div>
-        <p>Upload a document and give an instruction. You'll see every step the agent takes in real time.</p>
+        <p>Attach documents and give an instruction. You'll see every step the agent takes in real time.</p>
       </div>
     </div>
 
@@ -482,7 +482,7 @@
     <div class="input-area">
       <div class="upload-row">
         <label class="upload-btn" for="fileInput">
-          <span>+</span> Upload files
+          <span>+</span> Attach files
         </label>
         <input type="file" id="fileInput" accept=".pptx,.docx,.xlsx" multiple hidden />
         <span class="upload-status" id="uploadStatus"></span>
@@ -504,6 +504,7 @@
     let isRunning = false;
     let activeToolEl = null;   // The DOM element for the currently running tool
     let textBlockEl = null;    // The DOM element for the streaming text output
+    let selectedFiles = [];    // Files waiting to be sent
 
     // ── DOM refs ──────────────────────────────────────────────
     const feed         = document.getElementById('feed');
@@ -689,19 +690,23 @@
     }
 
     // ── Stream Handler ────────────────────────────────────────
-    async function sendInstruction(instruction, sessionId) {
+    async function sendInstruction(instruction, sessionId, files = []) {
       hideEmptyState();
       addUserMessage(instruction);
       setRunning(true);
 
-      const body = { instruction };
-      if (sessionId) body.session_id = sessionId;
+      const formData = new FormData();
+      formData.append('instruction', instruction);
+      if (sessionId) formData.append('session_id', sessionId);
+      for (const file of files) {
+        formData.append('files', file);
+      }
 
       try {
         const response = await fetch('/agent/stream', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+          // No Content-Type header, let browser set it with boundary
+          body: formData,
         });
 
         if (!response.ok) {
@@ -800,29 +805,12 @@
     }
 
     // ── File Upload ───────────────────────────────────────────
-    fileInput.addEventListener('change', async () => {
+    fileInput.addEventListener('change', () => {
       const files = fileInput.files;
       if (!files.length) return;
 
-      uploadStatus.textContent = `Uploading ${files.length} file(s)...`;
-
-      const formData = new FormData();
-      for (const file of files) {
-        formData.append('files', file);
-      }
-
-      try {
-        const res = await fetch('/upload', { method: 'POST', body: formData });
-        if (!res.ok) {
-          const err = await res.json();
-          uploadStatus.textContent = `Error: ${err.detail}`;
-          return;
-        }
-        const data = await res.json();
-        uploadStatus.textContent = `Uploaded: ${data.map(f => f.name).join(', ')}`;
-      } catch (err) {
-        uploadStatus.textContent = `Upload failed: ${err.message}`;
-      }
+      selectedFiles = Array.from(files);
+      uploadStatus.textContent = `${selectedFiles.length} file(s) attached`;
     });
 
     // ── New Session ───────────────────────────────────────────
@@ -857,7 +845,13 @@
       const sid = sessionInput.value.trim() || currentSessionId || null;
       promptInput.value = '';
       promptInput.style.height = 'auto';
-      sendInstruction(text, sid);
+
+      sendInstruction(text, sid, selectedFiles);
+
+      // Clear attached files
+      selectedFiles = [];
+      uploadStatus.textContent = '';
+      fileInput.value = ''; // Reset input
     }
 
     sendBtn.addEventListener('click', handleSend);
