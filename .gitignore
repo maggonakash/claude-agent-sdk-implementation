@@ -37,3 +37,7 @@ Thumbs.db
 
 # Project specific
 workspace/
+
+node_modules/
+temp_scripts
+*.json

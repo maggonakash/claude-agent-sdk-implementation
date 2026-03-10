@@ -39,6 +39,7 @@ from app.session_store import (
     session_exists,
     update_session,
 )
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +52,10 @@ if "CLAUDECODE" in os.environ:
 # ---------------------------------------------------------------------------
 # Constants & path helpers
 # ---------------------------------------------------------------------------
-WORKSPACE_DIR = Path(os.getenv("WORKSPACE_DIR", "./workspace")).resolve()
-
 
 def get_session_paths(session_id: str) -> tuple[Path, Path, Path]:
     """Return (session_root, uploads_dir, processed_dir) for a session."""
-    session_root = WORKSPACE_DIR / session_id
+    session_root = settings.WORKSPACE_DIR / session_id
     return session_root, session_root / "uploads", session_root / "processed"
 
 
@@ -240,19 +239,19 @@ async def run_agent_stream(
     """
 
     # --- 1. Session setup (same as run_agent) --------------------------------
-    is_new = session_id is None or not session_exists(WORKSPACE_DIR, session_id)
+    is_new = True if session_id is None else not await session_exists(session_id)
 
     if session_id is None:
         session_id = generate_session_id()
         logger.info(f"Stream: Generated new session_id: {session_id}")
 
     if is_new:
-        create_session(WORKSPACE_DIR, session_id)
+        await create_session(session_id)
         sdk_session_id = None
         history = []
         logger.info(f"Stream: Created new session record for {session_id}")
     else:
-        session_data = get_session(WORKSPACE_DIR, session_id)
+        session_data = await get_session(session_id)
         sdk_session_id = session_data.get("sdk_session_id")
         history = session_data.get("history", [])
         logger.info(f"Stream: Resuming session {session_id} (SDK ID: {sdk_session_id}) with {len(history)} history items")
@@ -280,7 +279,7 @@ async def run_agent_stream(
     logger.info(f"Stream: System prompt append:\n{options.system_prompt.get('append')}")
     logger.info(f"Stream: User instruction:\n{instruction}")
 
-    add_history_entry(WORKSPACE_DIR, session_id, role="user", content=instruction)
+    await add_history_entry(session_id, role="user", content=instruction)
 
     # Emit the session_id immediately so the client knows which session to poll
     yield AgentEvent("session_start", {"session_id": session_id})
@@ -401,14 +400,14 @@ async def run_agent_stream(
         # We record the partial result but don't mark it as a hard error in the system
         role = "assistant"
         content = f"[STREAM INTERRUPTED]\n{result_text}"
-        await asyncio.to_thread(add_history_entry, WORKSPACE_DIR, session_id, role=role, content=content)
+        await add_history_entry(session_id, role=role, content=content)
         raise  # Re-raise so FastAPI knows the connection was cleanly closed
 
 
     except Exception as e:
         is_error = True
         error_detail = str(e)
-        add_history_entry(WORKSPACE_DIR, session_id, role="error", content=str(e))
+        await add_history_entry(session_id, role="error", content=str(e))
         yield AgentEvent("error", {
             "message": f"Exception: {error_detail}",
             "session_id": session_id,
@@ -421,10 +420,9 @@ async def run_agent_stream(
     # --- Persist results ---
     role = "error" if is_error else "assistant"
     content = f"[ERROR] {error_detail}\n{result_text}" if is_error else result_text
-    add_history_entry(WORKSPACE_DIR, session_id, role=role, content=content)
+    await add_history_entry(session_id, role=role, content=content)
 
-    update_session(
-        WORKSPACE_DIR,
+    await update_session(
         session_id,
         sdk_session_id=captured_sdk_session_id,
     )

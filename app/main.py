@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 from app.agent import (
     run_agent_stream,
     ensure_session_dirs,
-    WORKSPACE_DIR,
 )
 from app.session_store import (
     create_session,
@@ -31,14 +30,12 @@ from app.session_store import (
     get_session,
     session_exists,
 )
+from app.core.config import settings
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 ALLOWED_EXTENSIONS = {".pptx", ".docx", ".xlsx"}
-
-# Ensure workspace root exists
-WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # FastAPI app
@@ -98,8 +95,8 @@ async def _save_uploads(
     if not files:
         return []
         
-    if not session_exists(WORKSPACE_DIR, session_id):
-        create_session(WORKSPACE_DIR, session_id)
+    if not await session_exists(session_id):
+        await create_session(session_id)
         
     _, uploads_dir, _ = ensure_session_dirs(session_id)
     uploaded_names: list[str] = []
@@ -154,16 +151,16 @@ async def create_new_session():
     """
     sid = generate_session_id()
     session_root, _, _ = ensure_session_dirs(sid)
-    create_session(WORKSPACE_DIR, sid)
+    await create_session(sid)
     return NewSessionResponse(session_id=sid, session_dir=str(session_root))
 
 
 @app.get("/sessions/{session_id}", response_model=SessionInfo)
 async def get_session_info(session_id: str):
     """Retrieve full session metadata and conversation history."""
-    if not session_exists(WORKSPACE_DIR, session_id):
+    if not await session_exists(session_id):
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
-    data = get_session(WORKSPACE_DIR, session_id)
+    data = await get_session(session_id)
     return SessionInfo(
         session_id=data["session_id"],
         sdk_session_id=data.get("sdk_session_id"),
@@ -176,9 +173,9 @@ async def get_session_info(session_id: str):
 @app.get("/sessions/{session_id}/history", response_model=list[HistoryEntry])
 async def get_session_history(session_id: str):
     """Retrieve just the conversation history for a session."""
-    if not session_exists(WORKSPACE_DIR, session_id):
+    if not await session_exists(session_id):
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
-    history = get_history(WORKSPACE_DIR, session_id)
+    history = await get_history(session_id)
     return [HistoryEntry(**e) for e in history]
 
 
