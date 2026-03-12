@@ -176,6 +176,7 @@ def _build_options(
             "Bash",     # Run shell commands (copying files, etc.)
             "Glob",     # Find files by pattern
             "Grep",     # Search file contents
+            "WebSearch",
         ],
 
         # Safety hooks: deletion prevention + file isolation
@@ -189,7 +190,7 @@ def _build_options(
         # },
 
         # Safety: cap turns to prevent runaway execution
-        max_turns=40,
+        max_turns=60,
 
         # Streaming: emit StreamEvent messages for real-time progress
         include_partial_messages=True,
