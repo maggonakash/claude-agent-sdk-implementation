@@ -40,6 +40,7 @@ from app.session_store import (
     update_session,
 )
 from app.core.config import settings
+from app.tracing import AgentTracer
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +283,15 @@ async def run_agent_stream(
 
     await add_history_entry(session_id, role="user", content=instruction)
 
+    # --- MLflow trace ---
+    tracer = AgentTracer()
+    tracer.start(
+        session_id=session_id,
+        instruction=instruction,
+        is_resume=not is_new,
+        uploaded_files=uploaded_files,
+    )
+
     # Emit the session_id immediately so the client knows which session to poll
     yield AgentEvent("session_start", {"session_id": session_id})
 
@@ -289,6 +299,7 @@ async def run_agent_stream(
     result_text: str = ""
     is_error: bool = False
     error_detail: str = ""
+    final_cost_usd: float | None = None
 
     # Track streaming state for tool events
     current_tool_name: str | None = None
@@ -309,6 +320,7 @@ async def run_agent_stream(
                     if block.get("type") == "tool_use":
                         current_tool_name = block.get("name")
                         current_tool_input = ""
+                        tracer.start_tool(current_tool_name)
                         yield AgentEvent("tool_start", {
                             "tool": current_tool_name,
                             "session_id": session_id,
@@ -333,6 +345,11 @@ async def run_agent_stream(
                     tool_summary = _summarize_tool_input(
                         current_tool_name, current_tool_input
                     )
+                    tracer.end_tool(
+                        current_tool_name,
+                        summary=tool_summary,
+                        tool_input=current_tool_input,
+                    )
                     yield AgentEvent("tool_end", {
                         "tool": current_tool_name,
                         "summary": tool_summary,
@@ -354,6 +371,7 @@ async def run_agent_stream(
             # --- AssistantMessage: a completed assistant turn ---
             elif isinstance(message, AssistantMessage):
                 turn_count += 1
+                tracer.record_turn(turn_count)
                 yield AgentEvent("status", {
                     "message": f"Turn {turn_count} completed",
                     "turn": turn_count,
@@ -371,6 +389,7 @@ async def run_agent_stream(
             # --- ResultMessage: final outcome ---
             elif isinstance(message, ResultMessage):
                 result_text = message.result or ""
+                final_cost_usd = message.total_cost_usd
 
                 if message.subtype == "success" and not message.is_error:
                     yield AgentEvent("result", {
@@ -398,6 +417,7 @@ async def run_agent_stream(
 
     except asyncio.CancelledError:
         logger.warning(f"Client disconnected during stream for session {session_id}. Cancelling agent.")
+        tracer.end(error="client_disconnected", result=result_text, turns=turn_count)
         # We record the partial result but don't mark it as a hard error in the system
         role = "assistant"
         content = f"[STREAM INTERRUPTED]\n{result_text}"
@@ -408,6 +428,7 @@ async def run_agent_stream(
     except Exception as e:
         is_error = True
         error_detail = str(e)
+        tracer.end(error=str(e), result=result_text, turns=turn_count)
         await add_history_entry(session_id, role="error", content=str(e))
         yield AgentEvent("error", {
             "message": f"Exception: {error_detail}",
@@ -418,7 +439,14 @@ async def run_agent_stream(
             logger.error(f"Failed to resume session {session_id}: {e}")
         return  # Stop the generator
 
-    # --- Persist results ---
+    # --- End trace & persist results ---
+    tracer.end(
+        result=result_text,
+        turns=turn_count,
+        cost_usd=final_cost_usd,
+        error=error_detail if is_error else None,
+    )
+
     role = "error" if is_error else "assistant"
     content = f"[ERROR] {error_detail}\n{result_text}" if is_error else result_text
     await add_history_entry(session_id, role=role, content=content)

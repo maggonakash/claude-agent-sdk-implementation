@@ -32,6 +32,18 @@ from app.session_store import (
 from app.core.config import settings
 
 # ---------------------------------------------------------------------------
+# MLflow tracing setup
+# ---------------------------------------------------------------------------
+import mlflow
+
+mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
+mlflow.set_experiment(settings.MLFLOW_EXPERIMENT_NAME)
+logger.info(
+    f"MLflow tracing: uri={settings.MLFLOW_TRACKING_URI}, "
+    f"experiment={settings.MLFLOW_EXPERIMENT_NAME}"
+)
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 ALLOWED_EXTENSIONS = {".pptx", ".docx", ".xlsx"}

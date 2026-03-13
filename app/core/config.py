@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     MONGODB_URI: str = os.getenv("MONGODB_URI")
     MONGODB_DB_NAME: str = os.getenv("MONGODB_DB_NAME")
 
+    # MLflow tracing
+    MLFLOW_TRACKING_URI: str = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
+    MLFLOW_EXPERIMENT_NAME: str = os.getenv("MLFLOW_EXPERIMENT_NAME", "document-agent")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
