@@ -40,4 +40,3 @@ workspace/
 
 node_modules/
 temp_scripts
-*.json
