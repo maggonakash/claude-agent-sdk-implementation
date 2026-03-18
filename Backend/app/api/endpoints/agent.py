@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
-ALLOWED_EXTENSIONS = {".pptx", ".docx", ".xlsx"}
+ALLOWED_EXTENSIONS = {".pptx", ".docx", ".xlsx", ".pdf", ".jpeg", ".jpg", ".png"}
 
 
 async def _save_uploads(session_id: str, files: list[UploadFile] | None) -> list[str]:
@@ -127,6 +127,7 @@ async def agent_stream_endpoint(
                 uploaded_files=uploaded_names or None,
                 user_id=user_id,
                 user_email=user_email,
+                message_id=message_id,
             ):
                 data = json.loads(event.to_sse().replace("data: ", "").strip())
 

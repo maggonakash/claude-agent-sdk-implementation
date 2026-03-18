@@ -346,15 +346,18 @@ async def enforce_file_isolation(
                             f"Attempted path: {p}"
                         ))
 
-            # 6) Any absolute path in the command must be inside session_root
-            abs_paths = ABS_PATH_RE.findall(command)
-            for p in abs_paths:
-                if not _in_session(p):
-                    logger.warning(f"Blocked Bash — absolute path outside session: {p}")
-                    return _deny(hook_event, (
-                        f"BLOCKED: All file paths must be inside your session directory. "
-                        f"Found path outside session: {p}"
-                    ))
+            # 6) ALL non-flag arguments that look like paths must be inside session
+            for token in tokens[1:]:
+                if token.startswith("-"):
+                    continue
+                # Bare "/" or any absolute path outside session
+                if token == "/" or token.startswith("/"):
+                    if not _in_session(token):
+                        logger.warning(f"Blocked Bash — path outside session: {token}")
+                        return _deny(hook_event, (
+                            f"BLOCKED: All file paths must be inside your session directory. "
+                            f"Found path outside session: {token}"
+                        ))
 
             # 7) Redirect targets must be writable
             for target in REDIRECT_RE.findall(command):

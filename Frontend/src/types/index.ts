@@ -1,3 +1,15 @@
+export interface Artifact {
+  artifact_id: string;
+  session_id: string;
+  message_id: string;
+  filename: string;
+  file_path: string;
+  file_size: number;
+  mime_type: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AgentStep {
   id: string;
   type: 'status' | 'tool' | 'error';
@@ -32,6 +44,7 @@ export interface ConversationTurn {
     costUsd?: number;
   };
   filesCreated: string[];
+  artifacts: Artifact[];
   error?: string;
   currentTurn?: number;
   maxTurns?: number;
@@ -97,6 +110,7 @@ export type AgentEventType =
   | 'error'
   | 'result'
   | 'files'
+  | 'artifacts'
   | 'done';
 
 export interface AgentEvent {
@@ -112,6 +126,7 @@ export interface AgentEvent {
   turns_used?: number;
   cost_usd?: number;
   files_modified?: string[];
+  artifacts?: Artifact[];
   turn?: number;
   max_turns?: number;
 }

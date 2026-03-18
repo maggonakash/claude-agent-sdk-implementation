@@ -8,7 +8,7 @@ interface InputAreaProps {
   sessionId: string | null;
 }
 
-const ALLOWED_EXTENSIONS = ['.pptx', '.docx', '.xlsx'];
+const ALLOWED_EXTENSIONS = ['.pptx', '.docx', '.xlsx', '.pdf', '.jpeg', '.jpg', '.png'];
 
 export default function InputArea({ onSend, isStreaming, sessionId }: InputAreaProps) {
   const [text, setText] = useState('');
@@ -105,7 +105,7 @@ export default function InputArea({ onSend, isStreaming, sessionId }: InputAreaP
             <input
               ref={fileInputRef}
               type="file"
-              accept=".pptx,.docx,.xlsx"
+              accept=".pptx,.docx,.xlsx,.pdf,.jpeg,.jpg,.png"
               multiple
               hidden
               onChange={handleFileChange}

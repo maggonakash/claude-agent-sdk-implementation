@@ -13,6 +13,7 @@ from app.db.sessions import (
     soft_delete_session,
     update_session,
 )
+from app.db.artifacts import get_artifacts_by_messages
 from app.db.messages import get_messages_paginated
 from app.schemas.session import (
     NewSessionResponse,
@@ -90,8 +91,18 @@ async def get_session_messages(
     """Return paginated messages (turns) for a session."""
     await _assert_session_access(session_id, current_user["user_id"])
     result = await get_messages_paginated(session_id, page=page, page_size=page_size)
+
+    # Batch-fetch artifacts for all messages in this page
+    message_ids = [m["message_id"] for m in result["messages"]]
+    artifacts_map = await get_artifacts_by_messages(message_ids)
+
+    messages_out = []
+    for m in result["messages"]:
+        m["artifacts"] = artifacts_map.get(m["message_id"], [])
+        messages_out.append(MessageOut(**m))
+
     return PaginatedMessages(
-        messages=[MessageOut(**m) for m in result["messages"]],
+        messages=messages_out,
         total=result["total"],
         page=result["page"],
         page_size=result["page_size"],

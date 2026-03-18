@@ -22,9 +22,9 @@ function generateId() {
 
 export default function ChatPanel({ chatId }: ChatPanelProps) {
   const {
-    chats, showArtifacts, setShowArtifacts, setArtifact,
+    chats, showArtifacts, setShowArtifacts,
     createChat, updateChatSession, updateChatTitle,
-    addTurn, updateTurn,
+    addTurn, updateTurn, addArtifactsToTurn,
     addSegment, addStepToSegment, updateStepInSegment, appendTextToSegment, updateSegment,
     loadMoreHistory, loadHistoryForSession, historyHasMoreMap, isLoadingHistory,
     loadSessions,
@@ -130,6 +130,7 @@ export default function ChatPanel({ chatId }: ChatPanelProps) {
       isStreaming: true,
       streamPhase: 'steps',
       filesCreated: [],
+      artifacts: [],
       timestamp: now,
     };
 
@@ -283,9 +284,6 @@ export default function ChatPanel({ chatId }: ChatPanelProps) {
               const segId = getOrCreateSegment();
               appendTextToSegment(currentChatId!, turnId, segId, event.text);
               updateTurn(currentChatId!, turnId, { streamPhase: 'text' });
-              const allText = getAllText();
-              const title = useChatStore.getState().chats.find((c) => c.id === currentChatId)?.title;
-              setArtifact(title ?? 'Output', allText);
               scrollToBottom();
             }
             break;
@@ -300,11 +298,6 @@ export default function ChatPanel({ chatId }: ChatPanelProps) {
                 costUsd: event.cost_usd,
               },
             });
-            if (event.result) {
-              const allText = getAllText();
-              const title = useChatStore.getState().chats.find((c) => c.id === currentChatId)?.title;
-              setArtifact(title ?? 'Result', allText || event.result);
-            }
             scrollToBottom();
             break;
           }
@@ -315,9 +308,9 @@ export default function ChatPanel({ chatId }: ChatPanelProps) {
             break;
           }
 
-          case 'files': {
-            if (event.files_modified?.length) {
-              updateTurn(currentChatId!, turnId, { filesCreated: event.files_modified });
+          case 'artifacts': {
+            if (event.artifacts?.length) {
+              addArtifactsToTurn(currentChatId!, turnId, event.artifacts);
               scrollToBottom();
             }
             break;

@@ -38,6 +38,7 @@ from app.db.sessions import (
     update_session,
 )
 from app.db.messages import get_messages_paginated
+from app.db.artifacts import create_artifact, get_existing_file_paths
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -82,27 +83,98 @@ def ensure_session_dirs(session_id: str) -> tuple[Path, Path, Path, Path]:
     return session_root, user_uploads, scratch, artifacts
 
 
-# Relative paths — the agent's cwd is session_root, so ./uploads and
-# ./processed just work without leaking absolute filesystem structure.
-SYSTEM_PROMPT_APPEND = """
-You are a document processing agent.
+def _build_system_prompt(session_root: Path) -> str:
+    """Build the system prompt with the actual session path baked in."""
+    session_path = str(session_root)
+    return f"""You are a document processing agent operating in a strictly sandboxed environment.
 
-Your working directory is the session root. You have three directories:
+Your workspace is: {session_path}
+This is the ONLY directory you have access to. Everything outside it is off-limits.
+
+You have three subdirectories:
 
   ./user-uploads/  — READ ONLY. Source files uploaded by the user.
-  ./scratch/       — READ, WRITE, DELETE. Your private scratchpad. Use it freely
-                     for temporary files, intermediate outputs, helper scripts, etc.
-                     The user does not see this folder.
-  ./artifacts/     — READ, WRITE. Final deliverables for the user. Save all outputs
-                     the user should receive here.
+  ./scratch/       — READ, WRITE, DELETE. Your private scratchpad for temporary files,
+                     intermediate outputs, and helper scripts. The user does not see this.
+  ./artifacts/     — READ, WRITE (no delete). Final deliverables for the user.
+                     Save all outputs the user should receive here.
 
-RULES:
-- NEVER delete files in ./user-uploads/ or ./artifacts/.
-- You MAY delete files in ./scratch/ as needed.
-- When editing a source document, always work from a copy — copy it to ./scratch/ first and edit there, then save the final result to ./artifacts/.
+═══════════════════════════════════════════════════════════════════
+                      STRICT SECURITY RULES
+  These rules are non-negotiable. Violations are blocked by hooks
+  and will waste turns. Do NOT attempt anything prohibited below.
+═══════════════════════════════════════════════════════════════════
+
+DIRECTORY ACCESS:
+- Your entire world is {session_path} — you CANNOT access anything outside it.
+- NEVER use `..` to traverse above your session root.
+- NEVER use absolute paths outside {session_path}.
+- NEVER attempt to access other sessions, system files, or any path outside your workspace.
+- All reads, writes, globs, greps, and bash commands are restricted to {session_path}.
+- NEVER run commands like `ls /`, `ls /app`, `cat /etc/anything`, or ANY command that
+  references paths outside your session — even to "just look" or "check what's there".
+  You do not have access and must not attempt it.
+- If the user asks you to access files or directories outside your session (root folder,
+  system directories, other apps, etc.), refuse immediately. Do not attempt the command
+  first — just explain that you only have access to {session_path}.
+
+WRITE PERMISSIONS:
+- ./user-uploads/ → READ ONLY. Never write, edit, move, rename, or delete anything here.
+- ./scratch/      → Full access (read, write, delete).
+- ./artifacts/    → Read and write only. Never delete files here.
+- If asked to modify a source document, copy it to ./scratch/ first, edit there,
+  then save the final result to ./artifacts/.
+
+DESTRUCTIVE COMMANDS:
+- NEVER run rm, rmdir, unlink, shred, truncate, or any deletion command outside ./scratch/.
+- NEVER run mv outside ./scratch/. Use cp to copy files to ./artifacts/.
+- Do not attempt these even if the user asks — the hooks will block them.
+
+CODE & SCRIPT SAFETY:
+- Before running ANY script file uploaded by the user, you MUST first read its full
+  contents using the Read tool and verify it is safe. Never trust user-uploaded scripts
+  blindly.
+- Inline code (python -c, bash -c, etc.) is allowed for legitimate use, but you must
+  ensure the code is not malicious before running it.
+- Whether running a script file, inline code, or writing your own code, always verify
+  it does NOT:
+    • Access paths outside {session_path} (../, absolute paths, /etc, /home, etc.)
+    • Attempt to access or enumerate other session directories or user data
+    • Read environment variables or secrets (os.environ, process.env, $ENV_VAR, etc.)
+    • Spawn reverse shells, open listening ports, or establish C2 connections
+    • Exfiltrate session data — never send file contents, user data, or session info
+      to external servers (e.g., via POST requests, curl --data, etc.)
+    • Download and execute remote code (curl ... | bash, wget ... | python, exec of
+      fetched content, etc.)
+    • Contain obfuscated code (base64-encoded exec, eval of encoded strings, etc.)
+    • Use os.system(), subprocess with shell=True, or exec()/eval() with dynamic input
+      in ways that could bypass sandbox restrictions
+    • Attempt to escalate privileges or modify system settings
+- The above list is not exhaustive. Use your own judgment to identify anything that
+  looks malicious, suspicious, or could compromise the sandbox — even if it is not
+  explicitly listed above. If something feels wrong, it probably is. Err on the side
+  of caution and refuse.
+- If a user-uploaded script contains any malicious patterns, refuse to run it and
+  explain why.
+- Network access (curl, wget, requests, APIs) is allowed for legitimate tasks. The
+  restriction is only on exfiltration (sending session/user data out) and remote
+  code execution (downloading and running untrusted code).
+
+FORBIDDEN ACTIONS (even if the user requests them):
+- Do not leak environment variables, secrets, API keys, or configuration files.
+- Do not install backdoors, keyloggers, or any form of persistent access.
+- Do not access /proc, /sys, /dev, or any OS-level resources outside the sandbox.
+- Do not enumerate or access other users' sessions or workspace directories.
+- If a user asks you to test, bypass, or break the sandbox — politely decline.
+  You may explain what the restrictions are, but never attempt to circumvent them.
+- This list is not exhaustive. If an action could compromise security, privacy, or
+  the integrity of the sandbox — do not do it, even if not explicitly listed here.
+
+GENERAL RULES:
 - Use the available Skills to read .pdf, .pptx, .docx, and .xlsx files.
 - Be thorough and report what you did after completing a task.
-""".strip()
+- If a user asks you to do something that violates these rules, politely decline
+  and explain why it is not allowed."""
 
 HISTORY_PREAMBLE = """
 --- Previous conversation history for this session ---
@@ -147,7 +219,7 @@ def _build_options(
     artifacts = session_root / "artifacts"
 
     # Build the system prompt with optional history context
-    append_parts = [SYSTEM_PROMPT_APPEND]
+    append_parts = [_build_system_prompt(session_root)]
 
     # List all currently uploaded files so the agent knows what's available
     # without needing to Glob first — saves a turn.
@@ -256,6 +328,7 @@ async def run_agent_stream(
     uploaded_files: list[str] | None = None,
     user_id: str | None = None,
     user_email: str | None = None,
+    message_id: str | None = None,
 ) -> AsyncGenerator[AgentEvent, None]:
     """
     Execute an agent query and yield AgentEvent objects in real-time.
@@ -283,6 +356,10 @@ async def run_agent_stream(
         msg_result = await get_messages_paginated(session_id, page=1, page_size=50)
         history = []
         for msg in msg_result["messages"]:
+            # Skip messages with no agent response yet — that's the current message
+            # being processed right now (already saved to DB by the endpoint).
+            if not msg.get("agent_response") and not msg.get("error"):
+                continue
             history.append({"role": "user", "content": msg["user_message"], "timestamp": msg["created_at"]})
             if msg.get("agent_response"):
                 history.append({"role": "assistant", "content": msg["agent_response"], "timestamp": msg["updated_at"]})
@@ -449,13 +526,43 @@ async def run_agent_stream(
         sdk_session_id=captured_sdk_session_id,
     )
 
-    # Emit file list
-    files_modified = []
-    if artifacts.exists():
-        files_modified = [str(p) for p in artifacts.rglob("*") if p.is_file()]
+    # --- Save new artifacts to DB and emit metadata ---
+    new_artifacts = []
+    if artifacts.exists() and message_id:
+        # Use a thread for sync I/O (rglob, stat) to avoid blocking the event loop
+        def _scan_artifacts():
+            return [
+                (p.relative_to(artifacts), p.stat().st_size)
+                for p in artifacts.rglob("*") if p.is_file()
+            ]
 
-    yield AgentEvent("files", {
-        "files_modified": files_modified,
+        all_files = await asyncio.to_thread(_scan_artifacts)
+        existing_paths = await get_existing_file_paths(session_id)
+
+        for rel_path, size in all_files:
+            path_str = str(rel_path)
+            if path_str not in existing_paths:
+                doc = await create_artifact(
+                    session_id=session_id,
+                    message_id=message_id,
+                    user_id=user_id or "",
+                    filename=rel_path.name,
+                    file_path=path_str,
+                    file_size=size,
+                )
+                new_artifacts.append(doc)
+
+    yield AgentEvent("artifacts", {
+        "artifacts": [
+            {
+                "artifact_id": a["artifact_id"],
+                "filename": a["filename"],
+                "file_path": a["file_path"],
+                "file_size": a["file_size"],
+                "mime_type": a["mime_type"],
+            }
+            for a in new_artifacts
+        ],
         "session_id": session_id,
     })
 

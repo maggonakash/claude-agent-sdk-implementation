@@ -96,9 +96,8 @@
   }
 
   .prose-agent pre {
-    @apply p-4 rounded-xl overflow-x-auto mb-3;
+    @apply p-4 overflow-x-auto;
     background: #16161c;
-    border: 1px solid #2e2e3a;
   }
 
   .prose-agent pre code {
@@ -126,8 +125,12 @@
     text-decoration: underline;
   }
 
+  .prose-agent .table-wrap {
+    @apply overflow-x-auto mb-3;
+  }
+
   .prose-agent table {
-    @apply w-full border-collapse mb-3 text-sm;
+    @apply w-full border-collapse text-sm;
   }
 
   .prose-agent th {
@@ -141,7 +144,10 @@
     @apply px-3 py-2;
     border: 1px solid #2e2e3a;
     color: #d0d0e0;
+    word-break: break-word;
+    max-width: 0;
   }
+
 }
 
 /* Typing cursor */
@@ -178,3 +184,35 @@
 .stream-dot:nth-child(1) { animation: streamDot 1.2s ease-in-out infinite; }
 .stream-dot:nth-child(2) { animation: streamDot 1.2s ease-in-out 0.2s infinite; }
 .stream-dot:nth-child(3) { animation: streamDot 1.2s ease-in-out 0.4s infinite; }
+
+/* DOCX preview container */
+.docx-container .docx-preview {
+  background: #1e1e26;
+  color: #d0d0e0;
+  padding: 1rem;
+  border-radius: 0.75rem;
+  border: 1px solid #2e2e3a;
+}
+
+/* XLSX preview table */
+.xlsx-preview table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.xlsx-preview th {
+  padding: 6px 10px;
+  text-align: left;
+  font-weight: 600;
+  border: 1px solid #2e2e3a;
+  background: #222228;
+  color: #fff;
+}
+
+.xlsx-preview td {
+  padding: 5px 10px;
+  border: 1px solid #2e2e3a;
+  color: #d0d0e0;
+}

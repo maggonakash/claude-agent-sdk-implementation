@@ -1,5 +1,7 @@
 from pydantic import BaseModel
 
+from app.schemas.artifact import ArtifactOut
+
 
 class MessageOut(BaseModel):
     message_id: str
@@ -13,6 +15,7 @@ class MessageOut(BaseModel):
     cost_usd: float | None
     created_at: str
     updated_at: str
+    artifacts: list[ArtifactOut] = []
 
 
 class PaginatedMessages(BaseModel):

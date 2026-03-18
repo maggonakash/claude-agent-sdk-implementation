@@ -32,10 +32,12 @@ async def create_db_indexes():
     from app.db.sessions import create_indexes as session_indexes
     from app.db.messages import create_indexes as message_indexes
     from app.db.feedback import create_indexes as feedback_indexes
+    from app.db.artifacts import create_indexes as artifact_indexes
     await user_indexes()
     await session_indexes()
     await message_indexes()
     await feedback_indexes()
+    await artifact_indexes()
 
 
 app.include_router(api_router)

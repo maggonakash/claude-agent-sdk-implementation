@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { Chat, ConversationTurn, AgentStep, TurnSegment, SessionListItem } from '../types';
+import { Artifact, Chat, ConversationTurn, AgentStep, TurnSegment, SessionListItem } from '../types';
 import { fetchSessions, fetchSessionMessages, MessageTurn } from '../api/sessions';
 import { ForbiddenError } from '../api/auth';
 
@@ -13,8 +13,7 @@ interface ChatStore {
   chats: Chat[];
   activeChatId: string | null;
   showArtifacts: boolean;
-  artifactTitle: string;
-  artifactContent: string;
+  selectedArtifact: Artifact | null;
   sidebarCollapsed: boolean;
 
   // Sidebar session list (from API)
@@ -52,10 +51,13 @@ interface ChatStore {
 
   // Actions — artifacts
   setShowArtifacts: (show: boolean) => void;
-  setArtifact: (title: string, content: string) => void;
+  selectArtifact: (artifact: Artifact | null) => void;
+  addArtifactsToTurn: (chatId: string, turnId: string, artifacts: Artifact[]) => void;
 
   // Actions — sidebar
   toggleSidebar: () => void;
+  artifactsPanelWidth: number;
+  setArtifactsPanelWidth: (width: number) => void;
 
   // Actions — API-driven session list
   loadSessions: (reset?: boolean) => Promise<void>;
@@ -73,8 +75,7 @@ export const useChatStore = create<ChatStore>()(
       chats: [],
       activeChatId: null,
       showArtifacts: false,
-      artifactTitle: '',
-      artifactContent: '',
+      selectedArtifact: null,
       sidebarCollapsed: false,
 
       sessionList: [],
@@ -103,8 +104,7 @@ export const useChatStore = create<ChatStore>()(
           chats: [chat, ...state.chats],
           activeChatId: chat.id,
           showArtifacts: false,
-          artifactContent: '',
-          artifactTitle: '',
+          selectedArtifact: null,
         }));
         return chat;
       },
@@ -113,8 +113,7 @@ export const useChatStore = create<ChatStore>()(
         set({
           activeChatId: id,
           showArtifacts: false,
-          artifactContent: '',
-          artifactTitle: '',
+          selectedArtifact: null,
         });
       },
 
@@ -325,10 +324,30 @@ export const useChatStore = create<ChatStore>()(
 
       setShowArtifacts: (show) => set({ showArtifacts: show }),
 
-      setArtifact: (title, content) =>
-        set({ artifactTitle: title, artifactContent: content, showArtifacts: true }),
+      selectArtifact: (artifact) =>
+        set({ selectedArtifact: artifact, ...(artifact !== null ? { showArtifacts: true } : {}) }),
+
+      addArtifactsToTurn: (chatId, turnId, artifacts) => {
+        set((state) => ({
+          chats: state.chats.map((c) =>
+            c.id === chatId
+              ? {
+                  ...c,
+                  turns: c.turns.map((t) =>
+                    t.id === turnId
+                      ? { ...t, artifacts: [...t.artifacts, ...artifacts] }
+                      : t
+                  ),
+                }
+              : c
+          ),
+        }));
+      },
 
       // ── Sidebar ───────────────────────────────────────────────
+
+      artifactsPanelWidth: 480,
+      setArtifactsPanelWidth: (width) => set({ artifactsPanelWidth: Math.max(320, Math.min(800, width)) }),
 
       toggleSidebar: () =>
         set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
@@ -455,6 +474,7 @@ export const useChatStore = create<ChatStore>()(
         chats: state.chats.slice(0, 50).map((c) => ({ ...c, turns: [] })),
         activeChatId: state.activeChatId,
         sidebarCollapsed: state.sidebarCollapsed,
+        artifactsPanelWidth: state.artifactsPanelWidth,
       }),
     }
   )
@@ -480,6 +500,7 @@ function messagesToTurns(messages: MessageTurn[]): ConversationTurn[] {
       isStreaming: false,
       streamPhase: 'done' as const,
       filesCreated: [],
+      artifacts: msg.artifacts ?? [],
       messageId: msg.message_id,
       feedbackSentiment: msg.is_liked === true ? 'liked' : msg.is_liked === false ? 'disliked' : undefined,
       error: msg.error ?? undefined,

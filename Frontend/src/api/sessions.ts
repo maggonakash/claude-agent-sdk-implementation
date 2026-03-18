@@ -1,4 +1,4 @@
-import { PaginatedSessions } from '../types';
+import { Artifact, PaginatedSessions } from '../types';
 import { apiFetch } from './auth';
 
 // Messages now come from /sessions/{id}/messages (not /history)
@@ -22,6 +22,15 @@ export interface MessageTurn {
   cost_usd: number | null;
   created_at: string;
   updated_at: string;
+  artifacts: Artifact[];
+}
+
+export interface PaginatedArtifacts {
+  artifacts: Artifact[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
 }
 
 export async function createSession(): Promise<{ session_id: string; session_dir: string }> {
@@ -60,4 +69,24 @@ export async function fetchSessionMessages(
   );
   if (!res.ok) throw new Error(`Failed to fetch messages for ${sessionId}: ${res.status}`);
   return res.json();
+}
+
+export async function fetchSessionArtifacts(
+  sessionId: string,
+  page: number = 1,
+  pageSize: number = 20,
+): Promise<PaginatedArtifacts> {
+  const res = await apiFetch(
+    `/sessions/${sessionId}/artifacts?page=${page}&page_size=${pageSize}`,
+  );
+  if (!res.ok) throw new Error(`Failed to fetch artifacts for ${sessionId}: ${res.status}`);
+  return res.json();
+}
+
+export function getArtifactDownloadUrl(sessionId: string, artifactId: string): string {
+  return `/sessions/${sessionId}/artifacts/${artifactId}/download`;
+}
+
+export function getArtifactPreviewUrl(sessionId: string, artifactId: string): string {
+  return `/sessions/${sessionId}/artifacts/${artifactId}/preview`;
 }

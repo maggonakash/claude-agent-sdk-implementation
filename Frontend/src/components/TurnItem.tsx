@@ -1,13 +1,17 @@
 import { useState } from 'react';
 import {
   ChevronDown, ChevronRight, Check, AlertCircle, FileText,
-  Copy, CheckCheck, Loader2, ThumbsUp, ThumbsDown,
+  Copy, CheckCheck, Loader2, ThumbsUp, ThumbsDown, Download,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useChatStore } from '../store/chatStore';
-import { ConversationTurn, TurnSegment } from '../types';
+import { Artifact, ConversationTurn, TurnSegment } from '../types';
+import { getArtifactDownloadUrl } from '../api/sessions';
+import { apiFetch } from '../api/auth';
 import FeedbackModal from './FeedbackModal';
+import { markdownComponents } from './MarkdownComponents';
+import { toast } from './Toast';
 import clsx from 'clsx';
 
 interface TurnItemProps {
@@ -17,8 +21,36 @@ interface TurnItemProps {
   isActive: boolean;
 }
 
+function getExtension(filename: string): string {
+  const parts = filename.split('.');
+  return parts.length > 1 ? parts.pop()!.toUpperCase() : '';
+}
+
+async function handleDownload(sessionId: string, artifact: Artifact) {
+  try {
+    const url = getArtifactDownloadUrl(sessionId, artifact.artifact_id);
+    const res = await apiFetch(url);
+    if (!res.ok) {
+      toast.error(
+        res.status === 404
+          ? `File "${artifact.filename}" no longer exists.`
+          : `Download failed (${res.status}).`
+      );
+      return;
+    }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = artifact.filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch {
+    toast.error('Download failed. Please try again.');
+  }
+}
+
 export default function TurnItem({ turn, chatId, sessionId, isActive }: TurnItemProps) {
-  const { toggleSegmentStepsCollapsed, updateTurn } = useChatStore();
+  const { toggleSegmentStepsCollapsed, updateTurn, selectArtifact } = useChatStore();
   const [copied, setCopied] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
   const [feedbackModal, setFeedbackModal] = useState<'liked' | 'disliked' | null>(null);
@@ -37,7 +69,7 @@ export default function TurnItem({ turn, chatId, sessionId, isActive }: TurnItem
   };
 
   const hasError = !!turn.error;
-  const hasFiles = turn.filesCreated.length > 0;
+  const hasArtifacts = turn.artifacts.length > 0;
   const hasResult = !!turn.result;
   const lastSegIdx = turn.segments.length - 1;
 
@@ -47,7 +79,7 @@ export default function TurnItem({ turn, chatId, sessionId, isActive }: TurnItem
       <div>
         <div className="bg-[#222228] border border-[#2e2e3a] rounded-2xl px-5 py-4">
           <div className="prose-agent text-sm text-[#e0e0f0] leading-relaxed">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
               {turn.userMessage}
             </ReactMarkdown>
           </div>
@@ -117,7 +149,7 @@ export default function TurnItem({ turn, chatId, sessionId, isActive }: TurnItem
                 <div>
                   <div className="bg-[#1e1e26] border border-[#2e2e3a] rounded-xl px-5 py-4">
                     <div className="prose-agent">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                         {segment.text}
                       </ReactMarkdown>
                       {isStreamingSeg && turn.streamPhase === 'text' && (
@@ -212,21 +244,34 @@ export default function TurnItem({ turn, chatId, sessionId, isActive }: TurnItem
           </div>
         )}
 
-        {/* Files Created */}
-        {hasFiles && (
-          <div className="px-4 py-3 bg-[#1e1e26] border border-[#2e2e3a] rounded-xl">
-            <p className="text-xs font-medium text-[#5a5a6a] mb-1.5">Files created</p>
-            <div className="space-y-1">
-              {turn.filesCreated.map((file) => {
-                const name = file.split('/').pop() ?? file;
-                return (
-                  <div key={file} className="flex items-center gap-1.5">
-                    <FileText size={11} className="text-[#00a8e8] flex-shrink-0" />
-                    <span className="text-xs font-mono text-[#9a9ab0] truncate">{name}</span>
-                  </div>
-                );
-              })}
-            </div>
+        {/* Artifacts */}
+        {hasArtifacts && (
+          <div className="space-y-2">
+            {turn.artifacts.map((artifact) => (
+              <div
+                key={artifact.artifact_id}
+                className="flex items-center gap-3 px-4 py-3 bg-[#1e1e26] border border-[#2e2e3a] rounded-xl hover:border-[#3e3e4a] transition-colors cursor-pointer"
+                onClick={() => selectArtifact(artifact)}
+              >
+                <div className="w-9 h-9 rounded-lg bg-[#2a2a38] flex items-center justify-center flex-shrink-0">
+                  <FileText size={16} className="text-[#9a9ab0]" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-[#e0e0f0] truncate">{artifact.filename}</p>
+                  <p className="text-[11px] text-[#5a5a6a] font-mono">{getExtension(artifact.filename)}</p>
+                </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDownload(sessionId, artifact);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#3e3e4a] text-xs text-[#9a9ab0] hover:text-[#e0e0f0] hover:border-[#5a5a6a] transition-colors flex-shrink-0"
+                >
+                  <Download size={13} />
+                  Download
+                </button>
+              </div>
+            ))}
           </div>
         )}
       </div>
