@@ -319,6 +319,42 @@ function ArtifactPreview({ artifact, sessionId, onBack, onClose }: ArtifactPrevi
         if (docxContainerRef.current) {
           await renderAsync(blob, docxContainerRef.current, undefined, {
             className: 'docx-preview',
+            ignoreFonts: true,
+            inWrapper: false,
+            ignoreWidth: true,
+            ignoreHeight: true,
+          });
+          // Post-process: Wingdings/Symbol bullets use Private Use Area
+          // Unicode characters (e.g. \uF0B7) that don't render in standard
+          // fonts.  For each injected <style>, replace the font AND swap PUA
+          // content characters with standard bullet glyphs.
+          const puaBulletMap: Record<string, string> = {
+            '\uF0B7': '\u2022', // ● → •
+            '\uF0A7': '\u25AA', // ■ → ▪
+            '\uF0FC': '\u2713', // ✓ → ✓
+            '\uF0D8': '\u25B6', // ▶ → ▶
+            '\uF076': '\u2022', // bullet variant → •
+            '\uF0A8': '\u25CB', // ○ → ○
+            '\uF06E': '\u25AA', // small square → ▪
+            '\uF02D': '\u2013', // dash → –
+          };
+          docxContainerRef.current.querySelectorAll('style').forEach((styleEl) => {
+            let css = styleEl.textContent ?? '';
+            // Remove Wingdings/Symbol font-family declarations entirely
+            css = css.replace(/font-family\s*:[^;]*(?:Wingdings|Symbol)[^;]*;/gi, '');
+            // Replace PUA characters in content: "..." values
+            for (const [pua, replacement] of Object.entries(puaBulletMap)) {
+              css = css.replaceAll(pua, replacement);
+            }
+            // Also replace escaped PUA hex references like \f0b7
+            css = css.replace(/\\f0b7/gi, '\\2022');
+            css = css.replace(/\\f0a7/gi, '\\25AA');
+            css = css.replace(/\\f0fc/gi, '\\2713');
+            css = css.replace(/\\f076/gi, '\\2022');
+            css = css.replace(/\\f0a8/gi, '\\25CB');
+            css = css.replace(/\\f06e/gi, '\\25AA');
+            css = css.replace(/\\f02d/gi, '\\2013');
+            styleEl.textContent = css;
           });
         }
       })
@@ -414,7 +450,7 @@ function ArtifactPreview({ artifact, sessionId, onBack, onClose }: ArtifactPrevi
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto artifact-preview-scroll">
         {loading && (
           <div className="flex items-center justify-center h-full">
             <Loader2 size={20} className="spinner text-[#00a8e8]/50" />
@@ -478,7 +514,7 @@ function ArtifactPreview({ artifact, sessionId, onBack, onClose }: ArtifactPrevi
 
         {/* DOCX */}
         {isDocx && !error && (
-          <div ref={docxContainerRef} className="px-4 py-4 docx-container" />
+          <div ref={docxContainerRef} className="docx-container" />
         )}
 
         {/* XLSX */}
