@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   X, Download, FileText, ArrowLeft, Loader2, Image as ImageIcon,
   Copy, CheckCheck, Layers,
@@ -99,12 +99,14 @@ export default function ArtifactsPanel() {
 
   const chat = chats.find((c) => c.id === activeChatId);
   const sessionId = chat?.sessionId ?? '';
+  const fetchedSessionRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || fetchedSessionRef.current === sessionId) return;
+    fetchedSessionRef.current = sessionId;
     setLoading(true);
     setPage(1);
-    fetchSessionArtifacts(sessionId, 1, 50)
+    fetchSessionArtifacts(sessionId, 1, 20)
       .then((data) => {
         setArtifacts(data.artifacts);
         setHasMore(data.has_more);
@@ -113,20 +115,26 @@ export default function ArtifactsPanel() {
       .finally(() => setLoading(false));
   }, [sessionId]);
 
-  // Merge streaming artifacts not yet in DB
-  const streamArtifacts = chat?.turns.flatMap((t) => t.artifacts) ?? [];
+  // Merge only artifacts from the current (non-history) turns not yet in DB
+  const streamArtifacts = chat?.turns
+    .filter((t) => !t.fromHistory)
+    .flatMap((t) => t.artifacts) ?? [];
   const dbIds = new Set(artifacts.map((a) => a.artifact_id));
   const mergedArtifacts = [
     ...artifacts,
     ...streamArtifacts.filter((a) => !dbIds.has(a.artifact_id)),
   ];
 
-  const loadMore = async () => {
-    if (!sessionId || !hasMore || loading) return;
+  const loadingRef = useRef(false);
+  const observerRef = useRef<IntersectionObserver | null>(null);
+
+  const loadMore = useCallback(async () => {
+    if (!sessionId || !hasMore || loadingRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
     const nextPage = page + 1;
     try {
-      const data = await fetchSessionArtifacts(sessionId, nextPage, 50);
+      const data = await fetchSessionArtifacts(sessionId, nextPage, 20);
       setArtifacts((prev) => [...prev, ...data.artifacts]);
       setHasMore(data.has_more);
       setPage(nextPage);
@@ -134,8 +142,27 @@ export default function ArtifactsPanel() {
       console.error(err);
     } finally {
       setLoading(false);
+      loadingRef.current = false;
     }
-  };
+  }, [sessionId, hasMore, page]);
+
+  const loadMoreRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+        observerRef.current = null;
+      }
+      if (!node || !hasMore) return;
+      observerRef.current = new IntersectionObserver(
+        (entries) => {
+          if (entries[0].isIntersecting) loadMore();
+        },
+        { threshold: 0.1 }
+      );
+      observerRef.current.observe(node);
+    },
+    [hasMore, loadMore]
+  );
 
   // If an artifact is selected, show the preview
   if (selectedArtifact) {
@@ -214,14 +241,7 @@ export default function ArtifactsPanel() {
           </div>
         )}
 
-        {hasMore && !loading && (
-          <button
-            onClick={loadMore}
-            className="w-full text-xs text-[#5a5a6a] hover:text-[#00a8e8] py-2 transition-colors"
-          >
-            Load more
-          </button>
-        )}
+        {hasMore && <div ref={loadMoreRef} className="h-4" />}
       </div>
     </div>
   );
